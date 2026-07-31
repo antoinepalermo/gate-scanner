@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>WH Gate Scanner</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, Roboto, Arial, sans-serif; background: #111; color: #fff; min-height: 100vh; }
+    header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: #1c1c1c; }
+    header h1 { font-size: 16px; font-weight: 600; }
+    .wh-badge { background: #ee4d2d; color: #fff; font-weight: 700; padding: 4px 12px; border-radius: 999px; font-size: 14px; }
+    #reader { width: 100%; max-width: 480px; margin: 0 auto; }
+    .screen { display: none; padding: 24px 16px; max-width: 480px; margin: 0 auto; text-align: center; }
+    .screen.active { display: block; }
+    .hint { color: #aaa; font-size: 13px; padding: 12px 16px; text-align: center; }
+
+    button.big { width: 100%; padding: 16px; font-size: 17px; font-weight: 700; border: none; border-radius: 12px; background: #ee4d2d; color: #fff; margin-top: 10px; }
+    button.big:active { opacity: .8; }
+    input.wh-input { width: 100%; padding: 14px; font-size: 18px; border-radius: 10px; border: 1px solid #444; background: #1c1c1c; color: #fff; text-transform: uppercase; text-align: center; margin: 16px 0; }
+    .error { color: #ff6b6b; font-size: 14px; margin: 12px 0; }
+    #helpLink { display: none; color: #4da6ff; font-size: 15px; margin-top: 16px; text-decoration: underline; }
+    #helpBox { display: none; text-align: left; background: #1c1c1c; border-radius: 12px; padding: 16px; margin-top: 12px; font-size: 14px; line-height: 1.6; color: #ddd; }
+    #helpBox ol { padding-left: 18px; margin-top: 6px; }
+    #helpBox li { margin-bottom: 8px; }
+    #helpBox .help-note { margin-top: 8px; color: #aaa; }
+    .spinner { margin: 40px auto; border: 4px solid #333; border-top: 4px solid #ee4d2d; border-radius: 50%; width: 44px; height: 44px; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Gate Scanner</h1>
+    <span class="wh-badge" id="whBadge">—</span>
+  </header>
+
+  <!-- WH setup (only shows if no ?wh= param and nothing saved on the device) -->
+  <div class="screen" id="setupScreen">
+    <p style="margin-top:24px">Set this device's warehouse code:</p>
+    <input class="wh-input" id="whInput" placeholder="e.g. PHL" maxlength="8">
+    <button class="big" onclick="saveWh()">Save Warehouse</button>
+  </div>
+
+  <!-- Live camera (with photo-capture fallback when live camera is blocked) -->
+  <div class="screen" id="scanScreen">
+    <div id="reader"></div>
+    <p class="hint" id="scanHint">Point the camera at the truck's QR code</p>
+    <div class="error" id="camError" style="display:none"></div>
+    <button class="big" id="photoBtn" style="display:none"
+            onclick="document.getElementById('photoInput').click()">📷 Scan by Photo</button>
+    <input type="file" id="photoInput" accept="image/*" capture="environment" style="display:none">
+    <a id="helpLink" href="#" onclick="toggleHelp(); return false;">🛠 How to fix the camera (tap here)</a>
+    <div id="helpBox">
+      <b>Fix the live camera:</b>
+      <ol>
+        <li>Tap the <b>🔒 icon</b> beside the web address at the top.</li>
+        <li>Tap <b>Permissions → Camera → Allow</b>.<br>
+            If Camera is not listed, tap <b>Reset permissions</b>.</li>
+        <li>Reload this page. When asked, choose<br><b>"Allow while visiting the site"</b> (NOT "Only this time").</li>
+        <li>Still blocked? Check the phone itself: long-press the Chrome icon →
+            <b>App info → Permissions → Camera → Allow</b>. Then reopen this page.</li>
+      </ol>
+      <p class="help-note">While waiting, keep using <b>📷 Scan by Photo</b> — scans are logged exactly the same way.</p>
+    </div>
+  </div>
+
+  <!-- Logging in progress -->
+  <div class="screen" id="busyScreen">
+    <div class="spinner"></div>
+    <p>Logging scan…</p>
+  </div>
+
+  <!-- Result is shown by the Apps Script web app after the logging navigation -->
+
+  <script>
+    // ── CONFIG ──────────────────────────────────────────────────────────────
+    // Paste your Apps Script web app URL here (ends in /exec).
+    // Works with "Anyone within Shopee" deployments: each scan is logged via a
+    // normal signed-in page navigation, so the gate device's Chrome must be
+    // signed into a Shopee Google account (one-time setup per device).
+    var SCRIPT_URL = 'https://script.google.com/a/macros/shopee.com/s/AKfycbwvDt0RwabLANxu9XCpXLCBDbYAE0CenqcgkW8gxsHYfFZgU8KYhv9-m5xtFRBEEDyM/exec';
+    // ────────────────────────────────────────────────────────────────────────
+
+    // WH priority: URL ?wh= param > saved on device.
+    var WH = (new URLSearchParams(location.search).get('wh') || localStorage.getItem('gate_wh') || '').toUpperCase().trim();
+    var scanner = null;
+    var liveRunning = false;
+
+    function show(id) {
+      document.querySelectorAll('.screen').forEach(function (s) { s.classList.remove('active'); });
+      document.getElementById(id).classList.add('active');
+    }
+
+    function saveWh() {
+      var v = document.getElementById('whInput').value.toUpperCase().trim();
+      if (!v) return;
+      localStorage.setItem('gate_wh', v);
+      WH = v;
+      init();
+    }
+
+    function parseQr(text) {
+      // Primary format: JSON {"plate":..,"vendor":..,"type":..} — crew details are
+      // looked up server-side from the master file. Old 6-field QR cards also parse.
+      try {
+        var o = JSON.parse(text);
+        if (o && o.plate) return o;
+      } catch (e) {}
+      // Fallback: pipe-delimited plate|vendor|type (older cards: |driver|helper|cp)
+      var p = text.split('|');
+      if (p.length >= 3) {
+        return { plate: p[0], vendor: p[1], type: p[2], driver: p[3], helper: p[4], cp: p[5] };
+      }
+      return null;
+    }
+
+    function startScanner() {
+      show('scanScreen');
+      if (!scanner) scanner = new Html5Qrcode('reader');
+      if (liveRunning) { try { scanner.resume(); } catch (e) {} return; }
+      scanner.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        onScan,
+        function () {} // per-frame decode misses — ignore
+      ).then(function () {
+        liveRunning = true;
+      }).catch(function (err) {
+        liveRunning = false;
+        document.getElementById('scanHint').style.display = 'none';
+        var ce = document.getElementById('camError');
+        ce.style.display = 'block';
+        ce.innerHTML = 'Live camera unavailable: ' + err +
+          '<br>Allow camera for this site and reload — or use photo mode below.';
+        document.getElementById('photoBtn').style.display = 'block';
+        document.getElementById('helpLink').style.display = 'inline-block';
+      });
+    }
+
+    function toggleHelp() {
+      var box = document.getElementById('helpBox');
+      box.style.display = box.style.display === 'block' ? 'none' : 'block';
+    }
+
+    document.getElementById('photoInput').addEventListener('change', function (e) {
+      var file = e.target.files && e.target.files[0];
+      e.target.value = '';
+      if (!file) return;
+      if (!scanner) scanner = new Html5Qrcode('reader');
+      show('busyScreen');
+      scanner.scanFile(file, false)
+        .then(function (text) {
+          var ce = document.getElementById('camError');
+          if (!parseQr(text)) {
+            show('scanScreen');
+            ce.innerHTML = 'That QR is not a truck card — take another photo.';
+            ce.style.display = 'block';
+            return;
+          }
+          onScan(text);
+        })
+        .catch(function () {
+          show('scanScreen');
+          var ce = document.getElementById('camError');
+          ce.style.display = 'block';
+          ce.innerHTML = 'No QR code found in the photo — hold closer/steadier and try again.';
+        });
+    });
+
+    function onScan(text) {
+      var data = parseQr(text);
+      if (!data) return; // not one of our truck QRs — keep scanning
+      if (liveRunning) { try { scanner.stop(); } catch (e) {} }
+      show('busyScreen');
+      // Domain-restricted deployments can't be reached by a cross-origin fetch,
+      // so log via a signed-in page navigation instead: the web app records the
+      // scan, shows the TIME IN/OUT result page, then returns here. Only vehicle
+      // fields travel in the URL — crew is looked up server-side.
+      var back = location.origin + location.pathname + '?wh=' + encodeURIComponent(WH);
+      location.href = SCRIPT_URL +
+        '?action=log&wh=' + encodeURIComponent(WH) +
+        '&plate=' + encodeURIComponent(data.plate || '') +
+        '&vendor=' + encodeURIComponent(data.vendor || '') +
+        '&type=' + encodeURIComponent(data.type || '') +
+        '&back=' + encodeURIComponent(back);
+    }
+
+    function init() {
+      if (SCRIPT_URL.indexOf('http') !== 0) {
+        document.body.insertAdjacentHTML('beforeend',
+          '<p class="error" style="padding:16px">SCRIPT_URL is not set — edit this file and paste the Apps Script /exec URL at the top of the script.</p>');
+        return;
+      }
+      if (!WH) { show('setupScreen'); return; }
+      document.getElementById('whBadge').textContent = WH;
+      startScanner();
+    }
+    init();
+  </script>
+</body>
+</html>
