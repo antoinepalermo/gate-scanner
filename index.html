@@ -15,6 +15,17 @@
     .screen.active { display: block; }
     .hint { color: #aaa; font-size: 13px; padding: 12px 16px; text-align: center; }
 
+    .dir { font-size: 64px; font-weight: 800; letter-spacing: 2px; margin: 16px 0 4px; }
+    .dir.in  { color: #2ecc71; }
+    .dir.out { color: #ff9f43; }
+    .dup { color: #ffd32a; font-size: 14px; margin-bottom: 8px; }
+    .time { color: #ccc; font-size: 15px; margin-bottom: 20px; }
+    .card { background: #1c1c1c; border-radius: 12px; padding: 16px; text-align: left; margin-bottom: 24px; }
+    .card .row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #2a2a2a; font-size: 14px; }
+    .card .row:last-child { border-bottom: none; }
+    .card .label { color: #888; }
+    .card .plate { font-size: 22px; font-weight: 700; text-align: center; padding-bottom: 10px; }
+
     button.big { width: 100%; padding: 16px; font-size: 17px; font-weight: 700; border: none; border-radius: 12px; background: #ee4d2d; color: #fff; margin-top: 10px; }
     button.big:active { opacity: .8; }
     input.wh-input { width: 100%; padding: 14px; font-size: 18px; border-radius: 10px; border: 1px solid #444; background: #1c1c1c; color: #fff; text-transform: uppercase; text-align: center; margin: 16px 0; }
@@ -24,6 +35,9 @@
     #helpBox ol { padding-left: 18px; margin-top: 6px; }
     #helpBox li { margin-bottom: 8px; }
     #helpBox .help-note { margin-top: 8px; color: #aaa; }
+    .trip-plate { font-size: 28px; font-weight: 800; letter-spacing: 1px; margin: 4px 0 10px; }
+    #tripScreen button.big { padding: 14px; margin-top: 8px; }  /* keep all four options on one phone screen */
+    #rescanLink { display: inline-block; color: #4da6ff; font-size: 14px; margin-top: 18px; text-decoration: underline; }
     .spinner { margin: 40px auto; border: 4px solid #333; border-top: 4px solid #ee4d2d; border-radius: 50%; width: 44px; height: 44px; animation: spin .8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
@@ -65,6 +79,18 @@
     </div>
   </div>
 
+  <!-- Trip type chooser (shown right after a QR is read) -->
+  <div class="screen" id="tripScreen">
+    <p class="hint" style="padding-top:0">Truck scanned:</p>
+    <div class="trip-plate" id="tripPlate"></div>
+    <p style="margin:10px 0 4px; font-weight:600">Select trip type:</p>
+    <button class="big" onclick="submitScan('INBOUND/OUTBOUND')">📦 Inbound/Outbound</button>
+    <button class="big" onclick="submitScan('MTO/MTI')">🔁 MTO/MTI</button>
+    <button class="big" onclick="submitScan('SELLER PICKUP')">🏪 Seller Pickup</button>
+    <button class="big" onclick="submitScan('CONS/ASSETS')">🧰 Cons/Assets</button>
+    <a id="rescanLink" href="#" onclick="startScanner(); return false;">✖ Wrong truck — scan again</a>
+  </div>
+
   <!-- Logging in progress -->
   <div class="screen" id="busyScreen">
     <div class="spinner"></div>
@@ -79,7 +105,7 @@
     // Works with "Anyone within Shopee" deployments: each scan is logged via a
     // normal signed-in page navigation, so the gate device's Chrome must be
     // signed into a Shopee Google account (one-time setup per device).
-    var SCRIPT_URL = 'https://script.google.com/a/macros/shopee.com/s/AKfycbwvDt0RwabLANxu9XCpXLCBDbYAE0CenqcgkW8gxsHYfFZgU8KYhv9-m5xtFRBEEDyM/exec';
+    var SCRIPT_URL = 'PASTE_YOUR_EXEC_URL_HERE';
     // ────────────────────────────────────────────────────────────────────────
 
     // WH priority: URL ?wh= param > saved on device.
@@ -168,10 +194,22 @@
         });
     });
 
+    var pendingData = null;
+
     function onScan(text) {
       var data = parseQr(text);
       if (!data) return; // not one of our truck QRs — keep scanning
-      if (liveRunning) { try { scanner.stop(); } catch (e) {} }
+      if (liveRunning) { try { scanner.stop(); liveRunning = false; } catch (e) {} }
+      // Ask the guard for the trip type before logging.
+      pendingData = data;
+      document.getElementById('tripPlate').textContent = String(data.plate || '').toUpperCase();
+      show('tripScreen');
+    }
+
+    function submitScan(trip) {
+      if (!pendingData) return;
+      var data = pendingData;
+      pendingData = null;
       show('busyScreen');
       // Domain-restricted deployments can't be reached by a cross-origin fetch,
       // so log via a signed-in page navigation instead: the web app records the
@@ -183,6 +221,7 @@
         '&plate=' + encodeURIComponent(data.plate || '') +
         '&vendor=' + encodeURIComponent(data.vendor || '') +
         '&type=' + encodeURIComponent(data.type || '') +
+        '&trip=' + encodeURIComponent(trip) +
         '&back=' + encodeURIComponent(back);
     }
 
